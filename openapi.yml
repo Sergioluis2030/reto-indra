@@ -1,0 +1,192 @@
+openapi: 3.0.3
+info:
+  title: Rimac Appointment Backend API
+  description: |
+    API de agendamiento de citas médicas para asegurados (Perú y Chile).
+    
+    Flujo:
+    1. POST crea la cita con estado "pending" en DynamoDB y publica a SNS.
+    2. SNS filtra por countryISO y envía a SQS_PE o SQS_CL.
+    3. Lambda del país guarda en RDS MySQL y emite evento a EventBridge.
+    4. EventBridge envía a cola de confirmación.
+    5. Lambda appointment actualiza el estado a "completed".
+  version: 1.0.0
+  contact:
+    name: Reto Técnico Rimac
+
+servers:
+  - url: https://{apiId}.execute-api.{region}.amazonaws.com/{stage}
+    variables:
+      apiId:
+        default: your-api-id
+      region:
+        default: us-east-1
+      stage:
+        default: dev
+
+paths:
+  /appointments:
+    post:
+      summary: Registrar una cita médica
+      description: Crea una solicitud de agendamiento. El estado inicial es "pending".
+      operationId: createAppointment
+      tags:
+        - Appointments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppointmentRequest'
+            examples:
+              peru:
+                summary: Cita en Perú
+                value:
+                  insuredId: "00123"
+                  scheduleId: 100
+                  countryISO: "PE"
+                  centerId: 4
+                  specialtyId: 3
+                  medicId: 4
+                  date: "2024-09-30T12:30:00Z"
+              chile:
+                summary: Cita en Chile
+                value:
+                  insuredId: "00999"
+                  scheduleId: 200
+                  countryISO: "CL"
+      responses:
+        '201':
+          description: Cita creada exitosamente (en proceso)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentResponse'
+        '400':
+          description: Error de validación
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /appointments/{insuredId}:
+    get:
+      summary: Listar citas de un asegurado
+      description: Devuelve todas las citas del asegurado incluyendo su estado actual.
+      operationId: getAppointmentsByInsured
+      tags:
+        - Appointments
+      parameters:
+        - name: insuredId
+          in: path
+          required: true
+          description: Código del asegurado (5 dígitos)
+          schema:
+            type: string
+            pattern: '^\d{5}$'
+            example: "00123"
+      responses:
+        '200':
+          description: Lista de citas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  insuredId:
+                    type: string
+                  count:
+                    type: integer
+                  appointments:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AppointmentResponse'
+        '400':
+          description: Parámetro inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    CreateAppointmentRequest:
+      type: object
+      required:
+        - insuredId
+        - scheduleId
+        - countryISO
+      properties:
+        insuredId:
+          type: string
+          pattern: '^\d{5}$'
+          description: Código del asegurado de 5 dígitos
+          example: "00123"
+        scheduleId:
+          type: integer
+          minimum: 1
+          description: Identificador del espacio de cita
+          example: 100
+        countryISO:
+          type: string
+          enum: [PE, CL]
+          description: País (PE = Perú, CL = Chile)
+        centerId:
+          type: integer
+          description: ID del centro médico
+        specialtyId:
+          type: integer
+          description: ID de la especialidad
+        medicId:
+          type: integer
+          description: ID del médico
+        date:
+          type: string
+          format: date-time
+          description: Fecha y hora de la cita (ISO 8601)
+
+    AppointmentResponse:
+      type: object
+      properties:
+        appointmentId:
+          type: string
+          format: uuid
+        insuredId:
+          type: string
+        scheduleId:
+          type: integer
+        countryISO:
+          type: string
+          enum: [PE, CL]
+        status:
+          type: string
+          enum: [pending, completed, failed]
+        centerId:
+          type: integer
+        specialtyId:
+          type: integer
+        medicId:
+          type: integer
+        date:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        message:
+          type: string
+          description: Mensaje informativo (solo en creación)
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
